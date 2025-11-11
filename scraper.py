@@ -5,10 +5,12 @@ import re
 from pathlib import Path
 import sys
 import requests
+import json  # Import the json library
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
 
 # --- Sitemap Functions (Fast URL Fetching) ---
+# (These are unchanged and still work)
 
 SITEMAP_INDEX_URL = "https://alfatah.pk/sitemap.xml"
 
@@ -18,6 +20,7 @@ def get_product_sitemap_urls(index_url):
     try:
         r = requests.get(index_url)
         r.raise_for_status()
+        # Requires 'lxml' to be in requirements.txt
         soup = BeautifulSoup(r.text, 'xml')
         sitemap_urls = [loc.text for loc in soup.find_all('loc') if 'sitemap_products' in loc.text]
         print(f"Found {len(sitemap_urls)} product sitemaps.")
@@ -46,10 +49,13 @@ def get_all_product_links_from_sitemaps(sitemap_urls):
     print(f"Found a total of {len(product_links)} product links from all sitemaps.")
     return product_links
 
-# --- Playwright Scraper (Slow Data Fetching) ---
+# --- Playwright Scraper (NEW ROBUST VERSION) ---
 
 async def scrape_product_page(page, url):
-    """Scrapes detailed data from a single product page."""
+    """
+    Scrapes detailed data from a single product page
+    by parsing the JSON-LD structured data.
+    """
     print(f"  Scraping page: {url}")
     try:
         await page.goto(url, wait_until="domcontentloaded", timeout=60000)
@@ -57,47 +63,68 @@ async def scrape_product_page(page, url):
         print(f"  Error navigating to {url}: {e}")
         return None
 
-    # Helper function to get text from a selector, returns 'N/A' if not found
-    async def get_text(selector):
-        try:
-            element = await page.query_selector(selector)
-            if element:
-                return (await element.inner_text()).strip()
-        except Exception:
-            pass  # Ignore errors and return N/A
-        return "N/A"
+    try:
+        # This selector finds the structured data script
+        script_selector = 'script[type="application/ld+json"]'
+        script_elements = await page.query_selector_all(script_selector)
+        
+        if not script_elements:
+            print(f"  No JSON-LD script found on {url}")
+            return None
 
-    # Common Shopify Selectors
-    title = await get_text("h1.product__title")
-    
-    # Try to get sale price and compare-at price
-    sale_price = await get_text("span.price.price--highlight")
-    compare_price = await get_text("span.price.price--compare")
-    
-    # If sale price isn't found, get the regular price
-    if sale_price == "N/A":
-        regular_price = await get_text("span.price--regular")
-        price = regular_price
-    else:
-        price = sale_price
+        for element in script_elements:
+            json_text = await element.inner_text()
+            data = json.loads(json_text)
+            
+            # Find the JSON block that is about a "Product"
+            # Sometimes it's a list, sometimes a single object
+            data_list = [data] if not isinstance(data, list) else data
+            
+            for item in data_list:
+                if item.get('@type') == 'Product':
+                    # Found the product data block, now extract it
+                    name = item.get('name', 'N/A')
+                    sku = item.get('sku', 'N/A')
+                    description = item.get('description', 'N/A').replace("\n", " ").strip()
+                    
+                    price = 'N/A'
+                    price_currency = 'N/A'
+                    availability = 'N/A'
+                    
+                    # Offers can be an object or a list
+                    offers = item.get('offers')
+                    if isinstance(offers, list):
+                        offers = offers[0] # Get the first offer
+                    
+                    if offers:
+                        price = offers.get('price', 'N/A')
+                        price_currency = offers.get('priceCurrency', 'N/A')
+                        
+                        # Clean up availability
+                        raw_availability = offers.get('availability', 'N/A')
+                        if 'InStock' in raw_availability:
+                            availability = 'In Stock'
+                        elif 'OutOfStock' in raw_availability:
+                            availability = 'Out of Stock'
+                        else:
+                            availability = raw_availability
 
-    # If there was a sale price, compare_price is the original.
-    # If there was no sale, price is regular and compare_price should be N/A.
-    if price == "N/A" and compare_price != "N/A":
-        price = compare_price
-        compare_price = "N/A"
+                    return {
+                        "name": name,
+                        "url": url,
+                        "price": price,
+                        "price_currency": price_currency,
+                        "sku": sku,
+                        "availability": availability,
+                        "description": description
+                    }
+        
+        print(f"  Found JSON-LD but no '@type': 'Product' on {url}")
+        return None
 
-    sku = await get_text("span.product-variant-sku")
-    description = await get_text("div.product__description.rte")
-
-    return {
-        "name": title,
-        "url": url,
-        "price": price,
-        "compare_at_price": compare_price,
-        "sku": sku,
-        "description": description.replace("\n", " ").strip() # Clean up description
-    }
+    except Exception as e:
+        print(f"  Error parsing JSON-LD from {url}: {e}")
+        return None
 
 
 async def main():
@@ -123,7 +150,6 @@ async def main():
         print("No product links found in sitemaps. Exiting.")
         return
         
-    # Limit to max_products
     links_to_scrape = product_links[:max_products]
     print(f"Will scrape detailed data for {len(links_to_scrape)} products.")
 
@@ -150,7 +176,9 @@ async def main():
     outdir.mkdir(exist_ok=True)
     filepath = outdir / "products_scraped.csv"
     
-    fieldnames = ["name", "url", "price", "compare_at_price", "sku", "description"]
+    # NEW fieldnames for the CSV
+    fieldnames = ["name", "url", "price", "price_currency", "sku", "availability", "description"]
+    
     try:
         with open(filepath, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
