@@ -6,7 +6,7 @@ on:
       max_products:
         description: 'Max products to scrape'
         required: false
-        default: '2000'
+        default: '50'
 
 jobs:
   scrape:
