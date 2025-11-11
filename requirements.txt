@@ -6,3 +6,4 @@ beautifulsoup4
 aiohttp
 python-dotenv
 rapidfuzz
+lxml
