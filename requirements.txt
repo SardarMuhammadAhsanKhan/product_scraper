@@ -1,0 +1,8 @@
+playwright==1.43.0
+pandas
+requests
+tenacity
+beautifulsoup4
+aiohttp
+python-dotenv
+rapidfuzz

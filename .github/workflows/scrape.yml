@@ -1,0 +1,44 @@
+name: Run Grocery Scraper
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_products:
+        description: 'Max products to scrape'
+        required: false
+        default: '2000'
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright browsers and dependencies
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Run scraper
+        env:
+          MAX_PRODUCTS: ${{ github.event.inputs.max_products }}
+        run: |
+          mkdir -p output
+          python scraper.py
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: products_scraped
+          path: output/
